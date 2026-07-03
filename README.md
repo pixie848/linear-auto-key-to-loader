@@ -35,3 +35,9 @@ node get-loader.js
 or pass the same 50-character key directly on the command line.
 
 When it finishes, it launches the downloaded `.exe` automatically.
+
+## Uninstall
+
+Double-click `Uninstall Linear Loader.bat` and type `UNINSTALL` when asked.
+It removes old Startup warmup entries, downloaded loaders, saved setup files,
+your saved key, and this folder.
