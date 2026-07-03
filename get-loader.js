@@ -16,7 +16,9 @@ const { chromium } = require("playwright");
 const SITE_URL = "https://launcher.linear.pub/";
 const KEYS_FILE = path.join(__dirname, "keys.txt");
 const DOWNLOAD_DIR = path.join(__dirname, "downloads");
-const SHOW_BROWSER = false;
+const DIAGNOSTICS_DIR = path.join(DOWNLOAD_DIR, "diagnostics");
+const SHOW_BROWSER = envFlag("LINEAR_SHOW_BROWSER");
+const RUN_DOWNLOADED = !envFlag("LINEAR_NO_RUN");
 const DEFAULT_TIMEOUT_MS = 15000;
 const OPTIONAL_CONTINUE_TIMEOUT_MS = 1500;
 const OPTIONAL_CONTINUE_TEXT_TIMEOUT_MS = 1000;
@@ -401,6 +403,10 @@ class FriendlyError extends Error {
   }
 }
 
+function envFlag(name) {
+  return /^(1|true|yes|on)$/i.test(String(process.env[name] || ""));
+}
+
 function printStartupBanner() {
   // Clear and home so the fixed-row layout below always anchors to the top,
   // and hide the hardware cursor so it can't blink around while we redraw.
@@ -441,6 +447,59 @@ async function closeBrowserQuietly(browser) {
   } catch {
     // The process is already finished or closing.
   }
+}
+
+function maskSensitiveText(text, key) {
+  let output = String(text || "");
+  const cleanKey = normalizeEnteredKey(key);
+
+  if (cleanKey) {
+    output = output.split(cleanKey).join(maskKey(cleanKey));
+  }
+
+  return output;
+}
+
+async function writeFailureDiagnostics(page, key, reason) {
+  fs.mkdirSync(DIAGNOSTICS_DIR, { recursive: true });
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const basePath = path.join(DIAGNOSTICS_DIR, `generate-missing-${stamp}`);
+  const textPath = `${basePath}.txt`;
+  const htmlPath = `${basePath}.html`;
+  const screenshotPath = `${basePath}.png`;
+  const maskedKey = maskKey(normalizeEnteredKey(key));
+
+  await page
+    .evaluate((maskValue) => {
+      for (const field of document.querySelectorAll("input, textarea")) {
+        if (field.value) {
+          field.value = field.value.replace(/[A-Za-z0-9]{50}/g, maskValue);
+        }
+      }
+    }, maskedKey)
+    .catch(() => {});
+
+  const [title, bodyText, html] = await Promise.all([
+    page.title().catch(() => ""),
+    page.locator("body").innerText({ timeout: 1000 }).catch(() => ""),
+    page.content().catch(() => ""),
+  ]);
+
+  const report = [
+    `Reason: ${reason}`,
+    `URL: ${page.url()}`,
+    `Title: ${title || "(no title)"}`,
+    "",
+    "Visible page text:",
+    maskSensitiveText(bodyText || "(no visible text)", key),
+  ].join("\r\n");
+
+  fs.writeFileSync(textPath, report, "utf8");
+  fs.writeFileSync(htmlPath, maskSensitiveText(html, key), "utf8");
+  await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
+
+  return { textPath, htmlPath, screenshotPath };
 }
 
 function getBrowserLaunchOptions() {
@@ -986,7 +1045,7 @@ function maskKey(key) {
   return key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : "(short key)";
 }
 
-async function waitForGenerateAfterKey(page, generateButton) {
+async function waitForGenerateAfterKey(page, generateButton, key) {
   const started = Date.now();
 
   while (Date.now() - started < GENERATE_TIMEOUT_MS) {
@@ -997,7 +1056,19 @@ async function waitForGenerateAfterKey(page, generateButton) {
     await page.waitForTimeout(100);
   }
 
-  throw new FriendlyError("Generate Loader did not appear after submitting the key. Check keys.txt and try again.");
+  let message = "Generate Loader did not appear after submitting the key. Check keys.txt and try again.";
+  try {
+    const diagnostics = await writeFailureDiagnostics(page, key, "Generate Loader button was not visible after key submit.");
+    message +=
+      "\n\nSaved diagnostics so you can see what page the script reached:" +
+      `\n- ${diagnostics.textPath}` +
+      `\n- ${diagnostics.htmlPath}` +
+      `\n- ${diagnostics.screenshotPath}`;
+  } catch (diagnosticErr) {
+    message += `\n\nCould not save diagnostics: ${diagnosticErr.message}`;
+  }
+
+  throw new FriendlyError(message);
 }
 
 // Read the one saved key from keys.txt.
@@ -1376,6 +1447,10 @@ async function getKeyToUse(cliKey) {
 }
 
 function runDownloaded(savePath) {
+  if (!RUN_DOWNLOADED) {
+    return false;
+  }
+
   if (path.extname(savePath).toLowerCase() !== ".exe") {
     console.log(color("\nNot running: the download is not an .exe file.", ANSI.red));
     return false;
@@ -1470,9 +1545,8 @@ async function main() {
   let closeBrowserPromise = null;
 
   try {
-    // By default the browser runs hidden in the background. If the site's layout
-    // ever changes and the script gets stuck, set SHOW_BROWSER to true to watch it
-    // work and see exactly where it stops.
+    // By default the browser runs hidden in the background. Set
+    // LINEAR_SHOW_BROWSER=1 before running to watch it work.
     const automation = await createAutomationPage({ acceptDownloads: true });
     browser = automation.browser;
     const page = automation.page;
@@ -1501,7 +1575,7 @@ async function main() {
     }
 
     const generateButton = page.getByText(/generate loader/i).first();
-    await waitForGenerateAfterKey(page, generateButton);
+    await waitForGenerateAfterKey(page, generateButton, key);
     board.complete("enterKey");
     readKeyTimeLeft(page)
       .then(updateHeaderKeyTime)
@@ -1528,6 +1602,8 @@ async function main() {
 
     if (launched) {
       await printFinishedBanner();
+    } else if (!RUN_DOWNLOADED) {
+      console.log(color("\nThe file was saved, but LINEAR_NO_RUN is set so it was not launched.", ANSI.red));
     } else {
       console.log(
         color("\nThe file was saved but is not an .exe, so it was not run.", ANSI.red)
@@ -1566,8 +1642,8 @@ main()
     if (!err || !err.isFriendly) {
       console.error(
         "\nTip: the site's buttons may use different text/markup than this script expects.\n" +
-          "Set SHOW_BROWSER = true near the top of main() to watch it run and see where it\n" +
-          "stopped, then adjust the selectors near the numbered steps in get-loader.js."
+          "Run with LINEAR_SHOW_BROWSER=1 to watch it run and see where it stopped,\n" +
+          "then adjust the selectors near the numbered steps in get-loader.js."
       );
     }
     process.exit(1);
