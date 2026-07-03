@@ -54,7 +54,7 @@ const DURATION_PATTERN = new RegExp(
 );
 const CLOCK_PATTERN = /\b\d{1,2}:\d{2}(?::\d{2})?\b/g;
 
-// "ANSI Shadow" 3D block font. Includes the banner, copy prompt, and key time.
+// "ANSI Shadow" 3D block font used for the main banner.
 const SHADOW_HEIGHT = 6;
 const SHADOW_LETTERS = {
   "0": [
@@ -339,6 +339,47 @@ function makeSmallArt(text) {
   return rows.map((row) => row.replace(/\s+$/, "")).join("\n");
 }
 
+const HEADER_PIXEL_HEIGHT = SHADOW_HEIGHT;
+const HEADER_PIXEL_LETTERS = {
+  "0": ["█████", "█   █", "█   █", "█   █", "█   █", "█████"],
+  "1": ["  █  ", " ██  ", "  █  ", "  █  ", "  █  ", "█████"],
+  "2": ["█████", "    █", "█████", "█    ", "█    ", "█████"],
+  "3": ["█████", "    █", " ████", "    █", "    █", "█████"],
+  "4": ["█   █", "█   █", "█████", "    █", "    █", "    █"],
+  "5": ["█████", "█    ", "█████", "    █", "    █", "█████"],
+  "6": ["█████", "█    ", "█████", "█   █", "█   █", "█████"],
+  "7": ["█████", "    █", "    █", "   █ ", "  █  ", "  █  "],
+  "8": ["█████", "█   █", "█████", "█   █", "█   █", "█████"],
+  "9": ["█████", "█   █", "█   █", "█████", "    █", "█████"],
+  C: ["█████", "█    ", "█    ", "█    ", "█    ", "█████"],
+  D: ["████ ", "█   █", "█   █", "█   █", "█   █", "████ "],
+  E: ["█████", "█    ", "█████", "█    ", "█    ", "█████"],
+  H: ["█   █", "█   █", "█████", "█   █", "█   █", "█   █"],
+  K: ["█   █", "█  █ ", "███  ", "█  █ ", "█   █", "█   █"],
+  M: ["█   █", "██ ██", "█ █ █", "█   █", "█   █", "█   █"],
+  O: ["█████", "█   █", "█   █", "█   █", "█   █", "█████"],
+  P: ["█████", "█   █", "█   █", "█████", "█    ", "█    "],
+  Y: ["█   █", "█   █", " █ █ ", "  █  ", "  █  ", "  █  "],
+  " ": ["   ", "   ", "   ", "   ", "   ", "   "],
+};
+
+function makeHeaderPixelArt(text) {
+  const rows = Array.from({ length: HEADER_PIXEL_HEIGHT }, () => "");
+  const chars = [...text.toUpperCase()];
+
+  chars.forEach((char, index) => {
+    const glyph = HEADER_PIXEL_LETTERS[char] || HEADER_PIXEL_LETTERS[" "];
+    for (let row = 0; row < HEADER_PIXEL_HEIGHT; row += 1) {
+      rows[row] += glyph[row];
+      if (index < chars.length - 1) {
+        rows[row] += "  ";
+      }
+    }
+  });
+
+  return rows.map((row) => row.replace(/\s+$/, "")).join("\n");
+}
+
 const LINEAR_ART = makeLetterArt("LINEAR.PUB");
 const LINEAR_WIDTH = Math.max(
   ...LINEAR_ART.split(/\r?\n/).map((line) => [...line].length)
@@ -472,7 +513,7 @@ function centeredSmallArtLines(text) {
 }
 
 function centeredHeaderArtLines(text) {
-  const raw = makeLetterArt(text);
+  const raw = makeHeaderPixelArt(text);
   return centerArt(raw, bannerGradient(raw)).split(/\r?\n/);
 }
 
@@ -1904,7 +1945,7 @@ async function promptForKey() {
   if (cursorReady) {
     drawTimeZone(centeredHeaderArtLines("COPY KEY"));
   } else {
-    console.log(bannerGradient(makeLetterArt("COPY KEY")));
+    console.log(bannerGradient(makeHeaderPixelArt("COPY KEY")));
     console.log();
   }
 
