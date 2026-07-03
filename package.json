@@ -1,0 +1,12 @@
+{
+  "name": "auto-linear-key",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Enters your current key on launcher.linear.pub, downloads the loader, and runs it.",
+  "scripts": {
+    "start": "node get-loader.js"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}
