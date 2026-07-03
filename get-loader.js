@@ -9,7 +9,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { execFileSync, spawn } = require("child_process");
+const { execFile, execFileSync, spawn } = require("child_process");
 const readline = require("readline");
 const { chromium } = require("playwright");
 
@@ -1582,8 +1582,16 @@ function findKeyInText(text) {
   return match ? match[1] : "";
 }
 
+// PowerShell args that print the raw clipboard text as UTF-8. Reused by the
+// synchronous (explicit paste) and asynchronous (background poll) readers.
+const CLIPBOARD_READ_ARGS = [
+  "-NoProfile",
+  "-Command",
+  "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; [Console]::Write((Get-Clipboard -Raw))",
+];
+
 function readClipboardText() {
-  return readClipboardSnapshot().text;
+  return readClipboardTextOnly();
 }
 
 function readClipboardTextOnly() {
@@ -1592,57 +1600,35 @@ function readClipboardTextOnly() {
   }
 
   try {
-    return execFileSync(
-      "powershell.exe",
-      ["-NoProfile", "-Command", "Get-Clipboard -Raw"],
-      {
-        encoding: "utf8",
-        timeout: 2000,
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "ignore"],
-      }
-    );
+    return execFileSync("powershell.exe", CLIPBOARD_READ_ARGS, {
+      encoding: "utf8",
+      timeout: 2000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
   } catch {
     return "";
   }
 }
 
-function readClipboardSnapshot() {
+// Non-blocking clipboard read for the background poll. Spawning PowerShell
+// synchronously froze the key prompt for ~1s per poll (dead shimmer, buffered
+// keystrokes); running it async keeps the event loop free while we wait.
+function readClipboardTextAsync() {
   if (process.platform !== "win32") {
-    return { text: "", sequence: 0 };
+    return Promise.resolve("");
   }
 
-  try {
-    const output = execFileSync(
+  return new Promise((resolve) => {
+    execFile(
       "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        "$sig='[DllImport(\"user32.dll\")] public static extern uint GetClipboardSequenceNumber();'; " +
-          "$native=Add-Type -MemberDefinition $sig -Name ClipboardSequence -Namespace Win32 -PassThru; " +
-          "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " +
-          "[Console]::WriteLine($native::GetClipboardSequenceNumber()); " +
-          "[Console]::Write((Get-Clipboard -Raw))",
-      ],
-      {
-        encoding: "utf8",
-        timeout: 2000,
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "ignore"],
+      CLIPBOARD_READ_ARGS,
+      { encoding: "utf8", timeout: 2000, windowsHide: true },
+      (error, stdout) => {
+        resolve(error || typeof stdout !== "string" ? "" : stdout);
       }
     );
-    const firstBreak = output.indexOf("\n");
-    if (firstBreak === -1) {
-      return { text: "", sequence: Number(output.trim()) || 0 };
-    }
-
-    return {
-      text: output.slice(firstBreak + 1),
-      sequence: Number(output.slice(0, firstBreak).trim()) || 0,
-    };
-  } catch {
-    return { text: readClipboardTextOnly(), sequence: 0 };
-  }
+  });
 }
 
 function saveCurrentKey(key) {
@@ -1681,7 +1667,6 @@ function askKeyPaste() {
     let shimmerFrame = 0;
     let rejectingText = false;
     let promptRejected = false;
-    let lastClipboardSequence = 0;
     let lastClipboardFingerprint = "";
 
     // Redraw the whole prompt line: the prompt "*" stays red after a rejection,
@@ -1721,7 +1706,8 @@ function askKeyPaste() {
         clearTimeout(pasteTimer);
       }
       if (clipboardTimer) {
-        clearInterval(clipboardTimer);
+        clearTimeout(clipboardTimer);
+        clipboardTimer = null;
       }
       if (!error) {
         renderPrompt();
@@ -1802,28 +1788,27 @@ function askKeyPaste() {
       }
     }
 
-    function checkClipboardForKey() {
+    async function checkClipboardForKey() {
       if (finished || rejectingText) {
         return;
       }
 
-      const snapshot = readClipboardSnapshot();
-      const clipboardText = snapshot.text;
+      const clipboardText = await readClipboardTextAsync();
+      if (finished || rejectingText) {
+        return;
+      }
+
       const clipboardFingerprint = rejectedFingerprint(clipboardText);
       if (!clipboardFingerprint) {
         return;
       }
 
-      if (snapshot.sequence) {
-        if (snapshot.sequence === lastClipboardSequence) {
-          return;
-        }
-        lastClipboardSequence = snapshot.sequence;
-      } else if (clipboardFingerprint === lastClipboardFingerprint) {
+      // Only react when the clipboard content actually changes, so a key we
+      // already handled (or text we already rejected) does not re-trigger.
+      if (clipboardFingerprint === lastClipboardFingerprint) {
         return;
-      } else {
-        lastClipboardFingerprint = clipboardFingerprint;
       }
+      lastClipboardFingerprint = clipboardFingerprint;
 
       const key = findKeyInText(clipboardText);
       if (key) {
@@ -1834,6 +1819,20 @@ function askKeyPaste() {
       if (!value) {
         void showRejectedText(clipboardText);
       }
+    }
+
+    // Poll one clipboard read at a time, scheduling the next only after the
+    // current async read settles. This avoids stacking PowerShell spawns when a
+    // read runs longer than the poll interval.
+    function scheduleClipboardPoll() {
+      if (finished) {
+        return;
+      }
+      clipboardTimer = setTimeout(async () => {
+        clipboardTimer = null;
+        await checkClipboardForKey();
+        scheduleClipboardPoll();
+      }, CLIPBOARD_POLL_MS);
     }
 
     function schedulePasteFinish(text) {
@@ -1933,8 +1932,9 @@ function askKeyPaste() {
     configureConsole({ quickEdit: true, pinTopmost: false });
     stdin.resume();
     stdin.on("data", onData);
-    clipboardTimer = setInterval(checkClipboardForKey, CLIPBOARD_POLL_MS);
-    checkClipboardForKey();
+    // Kick off the first read immediately, then keep polling as each read
+    // settles so an already-copied key is picked up right away.
+    checkClipboardForKey().then(scheduleClipboardPoll);
   });
 }
 
