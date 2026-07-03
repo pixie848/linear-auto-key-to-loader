@@ -1929,7 +1929,10 @@ function askKeyPaste() {
 
     renderPrompt();
     stdin.setRawMode(true);
-    configureConsole({ quickEdit: true, pinTopmost: false });
+    // Re-assert the lockdown after raw mode (which resets input flags). QuickEdit
+    // stays off even here: the key still pastes via Ctrl+V and clipboard
+    // auto-detect, so a stray click during entry can't freeze anything.
+    configureConsole({ quickEdit: false, pinTopmost: false });
     stdin.resume();
     stdin.on("data", onData);
     // Kick off the first read immediately, then keep polling as each read
@@ -2043,21 +2046,26 @@ function runDownloaded(savePath) {
   return true;
 }
 
-// Console hardening for Windows. During key entry, QuickEdit is kept on so
-// right-click paste works. During browser automation, QuickEdit is turned off
-// so an accidental click cannot freeze the console output.
+// Console hardening for Windows. We keep QuickEdit OFF the whole run so an
+// accidental click, drag, or right-click can never put the console into
+// selection mode (which freezes the program) or paste stray text into it. We
+// also drop ENABLE_MOUSE_INPUT so mouse events are ignored entirely. Key entry
+// stays fully usable without QuickEdit: pasting works through the Ctrl+V
+// handler and the clipboard auto-detect, neither of which needs it.
 // Best-effort and silent: if any of it fails we just keep going.
+function buildConsoleScript(quickEdit, pinTopmost) {
+  const quickEditValue = quickEdit ? "1" : "0";
+  const topmostValue = pinTopmost ? "1" : "0";
+  // 0x80 ENABLE_EXTENDED_FLAGS, 0x40 ENABLE_QUICK_EDIT_MODE, 0x10 ENABLE_MOUSE_INPUT.
+  return `$quickEdit = ${quickEditValue}; $topmost = ${topmostValue}; $s = '[DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr CreateFile(string n, uint a, uint sh, IntPtr t, uint c, uint f, IntPtr hh); [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m); [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int z, uint f);'; $k = Add-Type -MemberDefinition $s -Name ConsoleTweaks -Namespace ConIO -PassThru; $h = $k::CreateFile('CONIN$', [uint32]3221225472, 3, [IntPtr]::Zero, 3, 0, [IntPtr]::Zero); $m = 0; [void]$k::GetConsoleMode($h, [ref]$m); if ($quickEdit) { $m = (($m -bor 0x80) -bor 0x40) } else { $m = ((($m -bor 0x80) -band (-bnot 0x40)) -band (-bnot 0x10)) }; [void]$k::SetConsoleMode($h, $m); if ($topmost) { [void]$k::SetWindowPos($k::GetConsoleWindow(), [IntPtr](-1), 0, 0, 0, 0, [uint32]0x0003) }`;
+}
+
 function configureConsole(options = {}) {
   if (process.platform !== "win32") {
     return;
   }
 
-  const quickEdit = options.quickEdit !== false;
-  const pinTopmost = options.pinTopmost !== false;
-  const quickEditValue = quickEdit ? "1" : "0";
-  const topmostValue = pinTopmost ? "1" : "0";
-  const script = `$quickEdit = ${quickEditValue}; $topmost = ${topmostValue}; $s = '[DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr CreateFile(string n, uint a, uint sh, IntPtr t, uint c, uint f, IntPtr hh); [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m); [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int z, uint f);'; $k = Add-Type -MemberDefinition $s -Name ConsoleTweaks -Namespace ConIO -PassThru; $h = $k::CreateFile('CONIN$', [uint32]3221225472, 3, [IntPtr]::Zero, 3, 0, [IntPtr]::Zero); $m = 0; [void]$k::GetConsoleMode($h, [ref]$m); if ($quickEdit) { $m = (($m -bor 0x80) -bor 0x40) } else { $m = (($m -bor 0x80) -band (-bnot 0x40)) }; [void]$k::SetConsoleMode($h, $m); if ($topmost) { [void]$k::SetWindowPos($k::GetConsoleWindow(), [IntPtr](-1), 0, 0, 0, 0, [uint32]0x0003) }`;
-
+  const script = buildConsoleScript(options.quickEdit !== false, options.pinTopmost !== false);
   try {
     execFileSync(
       "powershell.exe",
@@ -2066,6 +2074,26 @@ function configureConsole(options = {}) {
     );
   } catch {
     // The window stays click-sensitive / normal z-order; the run still works.
+  }
+}
+
+// Same lockdown, fired without blocking. Used at startup so the console is
+// hardened almost immediately without adding ~1s to the launch.
+function configureConsoleAsync(options = {}) {
+  if (process.platform !== "win32") {
+    return;
+  }
+
+  const script = buildConsoleScript(options.quickEdit !== false, options.pinTopmost !== false);
+  try {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { timeout: 5000, windowsHide: true, stdio: "ignore" },
+      () => {}
+    );
+  } catch {
+    // Best-effort; the synchronous locks at key entry / automation still apply.
   }
 }
 
@@ -2090,6 +2118,10 @@ function cleanDownloadsDir() {
 }
 
 async function main() {
+  // Harden the console right away (non-blocking) so clicks/right-clicks can't
+  // freeze or corrupt the run even before the key prompt appears.
+  configureConsoleAsync({ quickEdit: false, pinTopmost: false });
+
   printStartupBanner();
 
   const cliKey = process.argv[2];
@@ -2115,6 +2147,9 @@ async function main() {
     // By default the browser runs hidden in the background. Set
     // LINEAR_SHOW_BROWSER=1 before running to watch it work.
     const automationPromise = createAutomationPage({ acceptDownloads: true });
+    // Re-assert the lockdown (key entry toggled raw mode) and pin the window on
+    // top for the automation phase. Runs while the browser launches, so it costs
+    // no extra wall-clock time.
     configureConsole({ quickEdit: false });
     const automation = await automationPromise;
     browser = automation.browser;
@@ -2182,17 +2217,31 @@ function showCursor() {
   }
 }
 
+// Hard-exit, but let stdout drain first so the final status redraw (all dots
+// blue) and the "finished" line are never truncated by the immediate exit. A
+// short fallback guarantees we still exit promptly if the drain never fires.
+function exitAfterFlush(code) {
+  showCursor();
+  let exited = false;
+  const done = () => {
+    if (!exited) {
+      exited = true;
+      process.exit(code);
+    }
+  };
+  process.stdout.write("", done);
+  setTimeout(done, 250).unref();
+}
+
 installCancellationHandlers();
 
 main()
   .then(() => {
     // Force the process to close once everything is done, even if the browser
     // or a detached handle would otherwise keep it alive.
-    showCursor();
-    process.exit(process.exitCode || 0);
+    exitAfterFlush(process.exitCode || 0);
   })
   .catch((err) => {
-    showCursor();
     console.error("\nSomething went wrong:");
     console.error(err && err.message ? err.message : err);
     if (!err || !err.isFriendly) {
@@ -2202,5 +2251,5 @@ main()
           "then adjust the selectors near the numbered steps in get-loader.js."
       );
     }
-    process.exit(1);
+    exitAfterFlush(1);
   });
