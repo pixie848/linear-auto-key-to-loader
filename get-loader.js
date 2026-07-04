@@ -8,6 +8,7 @@
 //   node get-loader.js MYKEY123   -> uses the key you pass on the command line
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execFile, execFileSync, spawn } = require("child_process");
 const readline = require("readline");
@@ -15,6 +16,8 @@ const { chromium } = require("playwright");
 
 const SITE_URL = "https://launcher.linear.pub/";
 const KEYS_FILE = path.join(__dirname, "keys.txt");
+const EXE_TYPE_FILE = path.join(__dirname, "exe-type.txt");
+const EXE_TYPE_BOOT_STATE_FILE = path.join(__dirname, "exe-type-boot-state.json");
 const BROWSER_PROFILE_DIR = path.join(__dirname, ".browser-profile");
 const DOWNLOAD_DIR = path.join(__dirname, "downloads");
 const DIAGNOSTICS_DIR = path.join(DOWNLOAD_DIR, "diagnostics");
@@ -33,11 +36,14 @@ const KEY_TIME_READ_TIMEOUT_MS = 250;
 const STATUS_TICK_MS = 120;
 const PROMPT_SHIMMER_TICK_MS = 90;
 const SUCCESS_EXIT_SECONDS = 0;
+const SHOW_BROWSER_HOLD_MS = 300000;
+const EXE_TYPE_EDIT_WINDOW_MS = 2500;
 const BLOCKED_RESOURCE_TYPES = new Set(["image", "font", "media"]);
 const KEY_LENGTH = 50;
 const KEY_PATTERN = /^[A-Za-z0-9]{50}$/;
 const PASTE_REJECT_DELAY_MS = 180;
 const CLIPBOARD_POLL_MS = 300;
+const EXE_TYPE_DEFAULT = "no";
 
 const ANSI = {
   reset: "\x1b[0m",
@@ -761,6 +767,7 @@ async function writeFailureDiagnostics(page, key, reason) {
 function getBrowserLaunchOptions() {
   return {
     headless: !SHOW_BROWSER,
+    slowMo: SHOW_BROWSER ? 250 : 0,
     args: [
       "--disable-extensions",
       "--disable-background-networking",
@@ -1531,6 +1538,291 @@ async function waitForGenerateAfterKey(page, keyField, generateButton, key) {
   throw new FriendlyError(message);
 }
 
+async function chooseNativeExeType(page, exeType) {
+  return page
+    .evaluate((requestedType) => {
+      const normalize = (value) =>
+        String(value || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+      const typeLabelPattern = /\btype\s+of\s+exe\b|\bexe\s+type\b|\bspoofer\s+type\b/i;
+      const optionMatches = (value) => {
+        const normalized = normalize(value);
+        if (requestedType === "be") {
+          return (
+            normalized === "be" ||
+            normalized === "before execution" ||
+            /\bbe\b/.test(normalized) ||
+            /\bbattleye\b|\bbattle eye\b/.test(normalized)
+          );
+        }
+        return ["no", "none", "normal", "default"].includes(normalized) || /\bno\b/.test(normalized);
+      };
+      const isVisible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      const describeSelect = (select) => {
+        const parts = [];
+        if (select.id && window.CSS && CSS.escape) {
+          const label = document.querySelector(`label[for="${CSS.escape(select.id)}"]`);
+          if (label) {
+            parts.push(label.textContent || "");
+          }
+        }
+        const wrappingLabel = select.closest("label");
+        if (wrappingLabel) {
+          parts.push(wrappingLabel.textContent || "");
+        }
+        let parent = select.parentElement;
+        for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
+          parts.push(parent.textContent || "");
+        }
+        return normalize(parts.join(" "));
+      };
+
+      const candidates = [...document.querySelectorAll("select")]
+        .filter(isVisible)
+        .map((select) => {
+          const optionText = [...select.options]
+            .map((option) => `${option.textContent || ""} ${option.value || ""}`)
+            .join(" ");
+          const description = describeSelect(select);
+          let score = 0;
+          if (typeLabelPattern.test(description)) {
+            score += 20;
+          }
+          if (typeLabelPattern.test(normalize(optionText))) {
+            score += 5;
+          }
+          if ([...select.options].some((option) => optionMatches(`${option.textContent || ""} ${option.value || ""}`))) {
+            score += 10;
+          }
+          return { select, score };
+        })
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score);
+
+      for (const { select } of candidates) {
+        const option = [...select.options].find((candidate) =>
+          optionMatches(`${candidate.textContent || ""} ${candidate.value || ""}`)
+        );
+        if (!option) {
+          continue;
+        }
+
+        select.value = option.value;
+        option.selected = true;
+        select.dispatchEvent(new Event("input", { bubbles: true }));
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }
+
+      return false;
+    }, exeType)
+    .catch(() => false);
+}
+
+function exeTypeOptionPatterns(exeType) {
+  return exeType === "be"
+    ? [/\bBE\b/i, /BattlEye/i, /Battle Eye/i]
+    : [/No Spoofer/i, /^No$/i, /\bNone\b/i, /\bDefault\b/i];
+}
+
+async function chooseComboboxExeType(page, exeType) {
+  const combobox = page.getByRole("combobox").first();
+  const comboboxCount = await combobox.count().catch(() => 0);
+  if (!comboboxCount || !(await combobox.isVisible().catch(() => false))) {
+    return false;
+  }
+
+  const patterns = exeTypeOptionPatterns(exeType);
+  const currentText = await combobox.innerText({ timeout: FAST_ACTION_TIMEOUT_MS }).catch(() => "");
+  if (patterns.some((pattern) => pattern.test(currentText))) {
+    return true;
+  }
+
+  await combobox.click({ timeout: DEFAULT_TIMEOUT_MS });
+  await page.waitForTimeout(150);
+
+  for (const pattern of patterns) {
+    const option = page.getByRole("option", { name: pattern }).first();
+    if (await option.isVisible({ timeout: FAST_ACTION_TIMEOUT_MS }).catch(() => false)) {
+      await option.click({ timeout: DEFAULT_TIMEOUT_MS });
+      return true;
+    }
+  }
+
+  for (const pattern of patterns) {
+    const option = page.getByText(pattern).last();
+    if (await option.isVisible({ timeout: FAST_ACTION_TIMEOUT_MS }).catch(() => false)) {
+      await option.click({ timeout: DEFAULT_TIMEOUT_MS });
+      return true;
+    }
+  }
+
+  await page.keyboard.press("Escape").catch(() => {});
+  return false;
+}
+
+async function clickExeTypeChoice(page, exeType) {
+  return page
+    .evaluate((requestedType) => {
+      const normalize = (value) =>
+        String(value || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+      const typeLabelPattern = /\btype\s+of\s+exe\b|\bexe\s+type\b|\bspoofer\s+type\b/i;
+      const optionMatches = (value) => {
+        const normalized = normalize(value);
+        if (requestedType === "be") {
+          return (
+            normalized === "be" ||
+            normalized === "before execution" ||
+            /\bbe\b/.test(normalized) ||
+            /\bbattleye\b|\bbattle eye\b/.test(normalized)
+          );
+        }
+        return ["no", "none", "normal", "default"].includes(normalized) || /\bno\b/.test(normalized);
+      };
+      const isVisible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      const elementText = (element) =>
+        [
+          element.textContent,
+          element.getAttribute("aria-label"),
+          element.getAttribute("title"),
+          element.getAttribute("value"),
+        ]
+          .filter(Boolean)
+          .join(" ");
+      const nearestTypeRoot = () => {
+        const labels = [...document.querySelectorAll("body *")].filter(
+          (element) => isVisible(element) && typeLabelPattern.test(elementText(element))
+        ).sort((a, b) => elementText(a).length - elementText(b).length);
+        for (const label of labels) {
+          let parent = label;
+          for (let depth = 0; parent && depth < 5; depth += 1, parent = parent.parentElement) {
+            const text = normalize(parent.textContent || "");
+            if (text.includes("type of exe") || text.includes("exe type") || text.includes("spoofer type")) {
+              return parent;
+            }
+          }
+        }
+        return document.body;
+      };
+      const clickFirstMatching = (root) => {
+        const candidates = [
+          ...root.querySelectorAll(
+            "button,[role='button'],[role='option'],[role='radio'],[role='menuitem'],label,input[type='radio']"
+          ),
+        ].filter(isVisible);
+
+        for (const candidate of candidates) {
+          const text = elementText(candidate);
+          const radioLabel =
+            candidate.id && window.CSS && CSS.escape
+              ? document.querySelector(`label[for="${CSS.escape(candidate.id)}"]`)
+              : null;
+          if (optionMatches(`${text} ${radioLabel ? radioLabel.textContent || "" : ""}`)) {
+            candidate.click();
+            candidate.dispatchEvent(new Event("input", { bubbles: true }));
+            candidate.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+          }
+        }
+
+        return false;
+      };
+
+      return clickFirstMatching(nearestTypeRoot()) || clickFirstMatching(document.body);
+    }, exeType)
+    .catch(() => false);
+}
+
+async function openExeTypeControl(page) {
+  return page
+    .evaluate(() => {
+      const isVisible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      const textFor = (element) =>
+        [element.textContent, element.getAttribute("aria-label"), element.getAttribute("title")]
+          .filter(Boolean)
+          .join(" ");
+      const typeLabelPattern = /\btype\s+of\s+exe\b|\bexe\s+type\b|\bspoofer\s+type\b/i;
+      const label = [...document.querySelectorAll("body *")]
+        .filter((element) => isVisible(element) && typeLabelPattern.test(textFor(element)))
+        .sort((a, b) => textFor(a).length - textFor(b).length)[0];
+      if (!label) {
+        return false;
+      }
+
+      for (let parent = label.parentElement; parent; parent = parent.parentElement) {
+        const control = parent.querySelector("[role='combobox'],[aria-haspopup='listbox']");
+        if (control && isVisible(control)) {
+          control.click();
+          return true;
+        }
+      }
+
+      label.click();
+      return true;
+    })
+    .catch(() => false);
+}
+
+async function chooseExeTypeOnWebsite(page, exeType, key) {
+  if (await chooseComboboxExeType(page, exeType)) {
+    if (SHOW_BROWSER) {
+      await page.waitForTimeout(750);
+    }
+    return true;
+  }
+
+  if (await chooseNativeExeType(page, exeType)) {
+    if (SHOW_BROWSER) {
+      await page.waitForTimeout(750);
+    }
+    return true;
+  }
+
+  await openExeTypeControl(page);
+  await page.waitForTimeout(100);
+  if (await clickExeTypeChoice(page, exeType)) {
+    if (SHOW_BROWSER) {
+      await page.waitForTimeout(750);
+    }
+    return true;
+  }
+
+  if (exeType === EXE_TYPE_DEFAULT) {
+    return false;
+  }
+
+  let message = "Could not select BE under Spoofer Type / Type of Exe before generating the launcher.";
+  try {
+    const diagnostics = await writeFailureDiagnostics(page, key, "Spoofer Type / Type of Exe BE option was not selectable.");
+    message +=
+      "\n\nSaved diagnostics so you can see what page the script reached:" +
+      `\n- ${diagnostics.textPath}` +
+      `\n- ${diagnostics.htmlPath}` +
+      `\n- ${diagnostics.screenshotPath}`;
+  } catch (diagnosticErr) {
+    message += `\n\nCould not save diagnostics: ${diagnosticErr.message}`;
+  }
+
+  throw new FriendlyError(message);
+}
+
 // Read the one saved key from keys.txt.
 function readCurrentKey() {
   if (!fs.existsSync(KEYS_FILE)) {
@@ -1644,6 +1936,218 @@ function readClipboardTextAsync() {
 function saveCurrentKey(key) {
   const cleanKey = normalizeEnteredKey(key);
   fs.writeFileSync(KEYS_FILE, `${cleanKey}\r\n`);
+}
+
+function normalizeExeType(value) {
+  const cleaned = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+  if (["b", "be", "before execution", "beforeexecution", "yes", "y"].includes(cleaned)) {
+    return "be";
+  }
+
+  if (["no", "n", "none", "normal", "default"].includes(cleaned)) {
+    return "no";
+  }
+
+  return "";
+}
+
+function formatExeType(exeType) {
+  return exeType === "be" ? "BE" : "none";
+}
+
+function readSavedExeType() {
+  if (!fs.existsSync(EXE_TYPE_FILE)) {
+    return "";
+  }
+
+  const lines = fs
+    .readFileSync(EXE_TYPE_FILE, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const exeType = normalizeExeType(line);
+    if (exeType) {
+      return exeType;
+    }
+  }
+
+  return "";
+}
+
+function saveExeType(exeType) {
+  fs.writeFileSync(EXE_TYPE_FILE, `${normalizeExeType(exeType) || EXE_TYPE_DEFAULT}\r\n`);
+}
+
+function currentBootId() {
+  const bootMs = Date.now() - os.uptime() * 1000;
+  return String(Math.floor(bootMs / 60000));
+}
+
+function readExeTypeBootState() {
+  try {
+    const state = JSON.parse(fs.readFileSync(EXE_TYPE_BOOT_STATE_FILE, "utf8"));
+    return state && typeof state === "object" ? state : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveExeTypeBootState(state) {
+  fs.writeFileSync(EXE_TYPE_BOOT_STATE_FILE, `${JSON.stringify(state, null, 2)}\r\n`);
+}
+
+function hasUsedBeThisBoot(bootId) {
+  return readExeTypeBootState().lastBeBootId === bootId;
+}
+
+function markBeUsedThisBoot(bootId) {
+  const state = readExeTypeBootState();
+  state.lastBeBootId = bootId;
+  state.lastBeUsedAt = new Date().toISOString();
+  saveExeTypeBootState(state);
+}
+
+function resolveExeTypePlan(defaultType, bootId = currentBootId()) {
+  const normalizedDefault = normalizeExeType(defaultType) || EXE_TYPE_DEFAULT;
+  const beUsedThisBoot = hasUsedBeThisBoot(bootId);
+  const exeType = normalizedDefault === "be" && !beUsedThisBoot ? "be" : "no";
+
+  return {
+    bootId,
+    defaultType: normalizedDefault,
+    exeType,
+    beUsedThisBoot,
+  };
+}
+
+function askExeTypeKey(query, options = {}) {
+  if (typeof process.stdin.setRawMode !== "function") {
+    return options.timeoutMs ? Promise.resolve("") : askLine(query);
+  }
+
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
+    let finished = false;
+    let timer = null;
+
+    function finish(value, error) {
+      if (finished) {
+        return;
+      }
+
+      finished = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      stdin.off("data", onData);
+      stdin.setRawMode(Boolean(wasRaw));
+      stdin.pause();
+      if (query) {
+        process.stdout.write("\n");
+      }
+
+      if (error) {
+        reject(error);
+      } else {
+        resolve(value);
+      }
+    }
+
+    function onData(buffer) {
+      const text = buffer.toString("utf8");
+      if (text.includes("\u0003")) {
+        finish("", new FriendlyError("Exe type selection cancelled.", "cancelled"));
+        return;
+      }
+
+      if (text.includes("\r") || text.includes("\n")) {
+        finish("");
+        return;
+      }
+
+      const key = text.replace(/\x1b\[[0-9;]*[A-Za-z~]/g, "").trim().charAt(0);
+      if (key) {
+        if (query) {
+          process.stdout.write(key);
+        }
+        finish(key);
+      }
+    }
+
+    if (query) {
+      process.stdout.write(query);
+    }
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("data", onData);
+    if (options.timeoutMs) {
+      timer = setTimeout(() => finish(""), options.timeoutMs);
+    }
+  });
+}
+
+async function promptForExeTypeDefault(currentType = "") {
+  while (true) {
+    const suffix = currentType ? ` (current ${formatExeType(currentType)})` : "";
+    const answer = await askExeTypeKey(
+      contentPad() + charcoalGradient(`type of exe [B/N]${suffix}: `)
+    );
+    const exeType = normalizeExeType(answer);
+    if (exeType) {
+      saveExeType(exeType);
+      return exeType;
+    }
+
+    console.log(contentPad() + color("Choose B for BE or N for none.", ANSI.red));
+  }
+}
+
+async function readExeTypeHotkey() {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return "";
+  }
+
+  const answer = await askExeTypeKey("", { timeoutMs: EXE_TYPE_EDIT_WINDOW_MS });
+  return answer.trim().toLowerCase();
+}
+
+async function promptForExeTypePlan() {
+  let savedExeType = readSavedExeType();
+  const bootId = currentBootId();
+
+  if (!savedExeType) {
+    savedExeType = process.stdin.isTTY && process.stdout.isTTY
+      ? await promptForExeTypeDefault()
+      : EXE_TYPE_DEFAULT;
+  }
+
+  return resolveExeTypePlan(savedExeType, bootId);
+}
+
+async function maybeEditExeTypeDefault(plan) {
+  const command = await readExeTypeHotkey();
+  if (!command) {
+    return plan;
+  }
+
+  let nextDefault = normalizeExeType(command);
+  if (command === "e" || command === "edit") {
+    nextDefault = await promptForExeTypeDefault(plan.defaultType);
+  }
+
+  if (!nextDefault) {
+    return plan;
+  }
+
+  saveExeType(nextDefault);
+  return resolveExeTypePlan(nextDefault, plan.bootId);
 }
 
 function askLine(query) {
@@ -2163,6 +2667,15 @@ async function main() {
     throw new FriendlyError("No key found in keys.txt. Add a key before running the loader.", "no_key");
   }
 
+  let exeTypePlan = await promptForExeTypePlan();
+  const shownExeType = exeTypePlan.defaultType;
+  console.log(contentPad() + charcoalGradient(`type of exe: ${formatExeType(exeTypePlan.defaultType)}`));
+  exeTypePlan = await maybeEditExeTypeDefault(exeTypePlan);
+  if (exeTypePlan.defaultType !== shownExeType) {
+    console.log(contentPad() + charcoalGradient(`type of exe: ${formatExeType(exeTypePlan.defaultType)}`));
+  }
+  const exeType = exeTypePlan.exeType;
+
   fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
   cleanDownloadsDir();
 
@@ -2171,6 +2684,7 @@ async function main() {
   const board = createStatusBoard();
 
   let browser;
+  let page;
   let closeBrowserPromise = null;
 
   try {
@@ -2184,7 +2698,7 @@ async function main() {
     const automation = await automationPromise;
     browser = automation.browser;
     activeBrowser = browser;
-    const page = automation.page;
+    page = automation.page;
     const keyField = page.locator("#serialNumber");
 
     await page.goto(SITE_URL, { waitUntil: "commit" });
@@ -2196,9 +2710,13 @@ async function main() {
     readKeyTimeLeft(page)
       .then(updateHeaderKeyTime)
       .catch(() => updateHeaderKeyTime("not shown by site"));
+    await chooseExeTypeOnWebsite(page, exeType, key);
 
     // 3) Click "Generate Loader" and capture the download it triggers.
     const savePath = await downloadLoader(board, browser, page, generateButton);
+    if (exeType === "be") {
+      markBeUsedThisBoot(exeTypePlan.bootId);
+    }
     board.complete("generate");
 
     if (!SHOW_BROWSER) {
@@ -2211,8 +2729,8 @@ async function main() {
     }
 
     if (SHOW_BROWSER) {
-      console.log("\nKeeping the browser open for 30 seconds so you can confirm everything finished...");
-      await page.waitForTimeout(30000);
+      console.log("\nKeeping the browser open for 5 minutes so you can confirm everything finished...");
+      await page.waitForTimeout(SHOW_BROWSER_HOLD_MS);
       closeBrowserPromise = trackBrowserClose(browser);
     }
 
@@ -2232,6 +2750,11 @@ async function main() {
       activeBrowser = null;
     }
   } catch (err) {
+    if (SHOW_BROWSER && page && !page.isClosed()) {
+      console.log("\nKeeping the browser open for 5 minutes so you can inspect where it stopped...");
+      await page.waitForTimeout(SHOW_BROWSER_HOLD_MS).catch(() => {});
+    }
+
     if (closeBrowserPromise) {
       await closeBrowserPromise;
     } else {

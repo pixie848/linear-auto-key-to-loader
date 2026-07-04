@@ -1,6 +1,8 @@
 .browser-profile/
 .linear-setup-ready
 downloads/
+exe-type-boot-state.json
+exe-type.txt
 keys.txt
 node_modules/
 

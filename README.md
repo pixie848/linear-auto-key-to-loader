@@ -25,6 +25,12 @@ If `keys.txt` is empty or missing, the script asks for your key once, saves it
 as the current key, and then future runs are automatic. Invalid text is
 rejected until a real 50-character key is entered.
 
+After the key is ready, the first run asks for `Type of Exe`: press `B` for BE
+or `N` for none. That default is saved. Later runs show the saved type and keep
+going automatically; press `B`, `N`, or `E` while the type line is visible to
+change it. When the default is BE, BE is only used once per Windows boot; later
+runs in the same boot use none temporarily, and the next restart enables BE
+once again.
 
 You can also run:
 

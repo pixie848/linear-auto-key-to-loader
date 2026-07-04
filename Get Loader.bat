@@ -19,6 +19,9 @@ if errorlevel 1 (
 )
 
 cls
+set "LINEAR_SHOW_BROWSER=1"
+set "DEBUG="
+set "PWDEBUG="
 node get-loader.js
 set "EXIT_CODE=%ERRORLEVEL%"
 
