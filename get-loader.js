@@ -24,6 +24,10 @@ const LOADER_LOCK_FILE = path.join(__dirname, ".loader-running.lock");
 const BROWSER_PROFILE_DIR = path.join(__dirname, ".browser-profile");
 const DOWNLOAD_DIR = path.join(__dirname, "downloads");
 const DIAGNOSTICS_DIR = path.join(DOWNLOAD_DIR, "diagnostics");
+// The automation browser runs hidden in the background by default. Set
+// LINEAR_SHOW_BROWSER=1 to watch it work — useful if the site's bot/challenge
+// check ever needs a real, visible window to pass (the persistent profile then
+// keeps the clearance so later background runs sail through).
 const SHOW_BROWSER = envFlag("LINEAR_SHOW_BROWSER");
 const RUN_DOWNLOADED = !envFlag("LINEAR_NO_RUN");
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -354,49 +358,71 @@ function makeSmallArt(text) {
 const HEADER_PIXEL_HEIGHT = 5;
 const HEADER_PIXEL_ON = "█";
 const HEADER_PIXEL_OFF = " ";
-const HEADER_PIXEL_GAP = "  ";
+// A tight one-cell gap keeps the glyphs of a group (e.g. "12D") together, while
+// a clear three-cell gap separates space-separated groups ("12D" vs "14H"), so
+// the key time reads as clean, evenly spaced blocks instead of one squished run.
+const HEADER_GLYPH_GAP = " ";
+const HEADER_WORD_GAP = "   ";
+// Roomier 4-wide glyphs (M is 5 for its centre peak) so the time art no longer
+// looks tall-and-thin the way the old 3-wide pixels did.
 const HEADER_PIXEL_LETTERS = {
-  "0": ["111", "101", "101", "101", "111"],
-  "1": ["010", "110", "010", "010", "111"],
-  "2": ["111", "001", "111", "100", "111"],
-  "3": ["111", "001", "111", "001", "111"],
-  "4": ["101", "101", "111", "001", "001"],
-  "5": ["111", "100", "111", "001", "111"],
-  "6": ["111", "100", "111", "101", "111"],
-  "7": ["111", "001", "010", "010", "010"],
-  "8": ["111", "101", "111", "101", "111"],
-  "9": ["111", "101", "111", "001", "111"],
-  C: ["111", "100", "100", "100", "111"],
-  D: ["110", "101", "101", "101", "110"],
-  E: ["111", "100", "111", "100", "111"],
-  H: ["101", "101", "111", "101", "101"],
-  K: ["101", "101", "110", "101", "101"],
-  // 5 pixels wide with the classic centre "peak" so it reads clearly as M and
-  // can't be mistaken for H (glyphs may be wider than the default 3 pixels).
+  "0": ["1111", "1001", "1001", "1001", "1111"],
+  "1": ["0110", "1110", "0110", "0110", "1111"],
+  "2": ["1111", "0001", "1111", "1000", "1111"],
+  "3": ["1111", "0001", "0111", "0001", "1111"],
+  "4": ["1001", "1001", "1111", "0001", "0001"],
+  "5": ["1111", "1000", "1111", "0001", "1111"],
+  "6": ["1111", "1000", "1111", "1001", "1111"],
+  "7": ["1111", "0001", "0011", "0010", "0010"],
+  "8": ["1111", "1001", "1111", "1001", "1111"],
+  "9": ["1111", "1001", "1111", "0001", "1111"],
+  C: ["1111", "1000", "1000", "1000", "1111"],
+  D: ["1110", "1001", "1001", "1001", "1110"],
+  E: ["1111", "1000", "1110", "1000", "1111"],
+  H: ["1001", "1001", "1111", "1001", "1001"],
+  K: ["1001", "1010", "1100", "1010", "1001"],
   M: ["10001", "11011", "10101", "10001", "10001"],
-  O: ["111", "101", "101", "101", "111"],
-  P: ["111", "101", "111", "100", "100"],
-  S: ["0111", "1000", "0110", "0001", "1110"],
-  Y: ["101", "101", "010", "010", "010"],
+  O: ["1111", "1001", "1001", "1001", "1111"],
+  P: ["1111", "1001", "1111", "1000", "1000"],
+  S: ["1111", "1000", "1111", "0001", "1111"],
+  Y: ["1001", "1001", "0110", "0110", "0110"],
   ":": ["0", "1", "0", "1", "0"],
-  " ": ["0", "0", "0", "0", "0"],
 };
 
 function makeHeaderPixelArt(text) {
   const rows = Array.from({ length: HEADER_PIXEL_HEIGHT }, () => "");
-  const chars = [...text.toUpperCase()];
+  let prevWasSpace = true;
 
-  chars.forEach((char, index) => {
-    const glyph = HEADER_PIXEL_LETTERS[char] || HEADER_PIXEL_LETTERS[" "];
+  for (const char of text.toUpperCase()) {
+    if (char === " ") {
+      if (!prevWasSpace) {
+        for (let row = 0; row < HEADER_PIXEL_HEIGHT; row += 1) {
+          rows[row] += HEADER_WORD_GAP;
+        }
+      }
+      prevWasSpace = true;
+      continue;
+    }
+
+    const glyph = HEADER_PIXEL_LETTERS[char];
+    if (!glyph) {
+      prevWasSpace = false;
+      continue;
+    }
+
+    if (!prevWasSpace) {
+      for (let row = 0; row < HEADER_PIXEL_HEIGHT; row += 1) {
+        rows[row] += HEADER_GLYPH_GAP;
+      }
+    }
+
     for (let row = 0; row < HEADER_PIXEL_HEIGHT; row += 1) {
       rows[row] += [...glyph[row]]
         .map((pixel) => (pixel === "1" ? HEADER_PIXEL_ON : HEADER_PIXEL_OFF))
         .join("");
-      if (index < chars.length - 1) {
-        rows[row] += HEADER_PIXEL_GAP;
-      }
     }
-  });
+    prevWasSpace = false;
+  }
 
   return rows.map((row) => row.replace(/\s+$/, "")).join("\n");
 }
@@ -412,13 +438,12 @@ const BANNER_GRADIENT_END = [40, 100, 235];
 // A red gradient used for rejected-key feedback.
 const REJECT_GRADIENT_START = [255, 125, 125];
 const REJECT_GRADIENT_END = [215, 25, 70];
-// "LINEAR." is drawn in white; "PUB" in one solid blue (no gradient).
-const LINEAR_WHITE = [240, 242, 248];
-const PUB_BLUE = [0, 76, 200];
-const LINEAR_PUB_SPLIT = ["L", "I", "N", "E", "A", "R", "."].reduce(
-  (total, char) => total + SHADOW_LETTERS[char][0].length,
-  0
-);
+// The whole "LINEAR.PUB" rides one blue gradient (no white). The block faces use
+// the shared banner gradient; the 3D shadow edges get a darkened navy so the
+// letters keep real depth and read as clean gradient blocks end to end.
+const BANNER_SHADOW_START = [22, 52, 120];
+const BANNER_SHADOW_END = [10, 28, 82];
+const BANNER_FILL_CHAR = "█";
 // A brushed-charcoal gradient for the key / status text.
 const CHARCOAL_START = [104, 109, 120];
 const CHARCOAL_END = [188, 193, 205];
@@ -462,7 +487,7 @@ function clamp(value, min, max) {
 }
 
 // Colour each visible character by its absolute column, so multi-row art reads
-// as one smooth left-to-right sweep. `colorAt(column, width)` returns the rgb.
+// as one smooth left-to-right sweep. `colorAt(column, width, char)` returns rgb.
 function paintColumns(text, colorAt) {
   const lines = text.split(/\r?\n/);
   const width = Math.max(1, ...lines.map((line) => [...line].length));
@@ -478,7 +503,7 @@ function paintColumns(text, colorAt) {
           return;
         }
 
-        const [r, g, b] = colorAt(column, width);
+        const [r, g, b] = colorAt(column, width, char);
         const colorCode = `\x1b[38;2;${r};${g};${b}m`;
 
         if (colorCode !== activeColor) {
@@ -511,11 +536,16 @@ function charcoalGradient(text) {
   );
 }
 
-// "LINEAR." in flat white, "PUB" in one solid blue.
+// The whole "LINEAR.PUB" in one blue gradient — bright faces sweep light -> deep
+// blue left to right, the 3D shadow edges ride a darker navy sweep for depth. No
+// white anywhere, just clean gradient blocks.
 function linearPubBanner() {
-  return paintColumns(LINEAR_ART, (column) =>
-    column < LINEAR_PUB_SPLIT ? LINEAR_WHITE : PUB_BLUE
-  );
+  return paintColumns(LINEAR_ART, (column, width, char) => {
+    const amount = width <= 1 ? 0 : column / (width - 1);
+    return char === BANNER_FILL_CHAR
+      ? blendColor(BANNER_GRADIENT_START, BANNER_GRADIENT_END, amount)
+      : blendColor(BANNER_SHADOW_START, BANNER_SHADOW_END, amount);
+  });
 }
 
 function termWidth() {
@@ -540,9 +570,10 @@ function centeredSmallArtLines(text) {
   return centerArt(raw, bannerGradient(raw)).split(/\r?\n/);
 }
 
-function centeredHeaderArtLines(text) {
-  const raw = makeHeaderPixelArt(text);
-  return centerArt(raw, bannerGradient(raw)).split(/\r?\n/);
+// Left-aligned so the key/time art shares the banner's left edge instead of
+// floating in the middle.
+function headerArtLines(text) {
+  return bannerGradient(makeHeaderPixelArt(text)).split(/\r?\n/);
 }
 
 function contentWidth() {
@@ -550,10 +581,10 @@ function contentWidth() {
   return Math.max(STATUS_DOT_COLUMN + 1, Math.min(available, LINEAR_WIDTH));
 }
 
-// Shared left margin for the text block (key line, statuses, prompt) so the
-// whole group fills the banner width and sits centred in the window.
+// Shared left margin for the text block (key line, statuses, prompt). Flush-left
+// so the whole group lines up under the banner's left edge instead of centring.
 function contentMargin() {
-  return Math.max(0, Math.floor((termWidth() - contentWidth()) / 2));
+  return 0;
 }
 
 function contentPad() {
@@ -705,7 +736,7 @@ function drawBaseBanner() {
 
   process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
   process.stdout.write("\n".repeat(TOP_GAP));
-  console.log(centerArt(LINEAR_ART, linearPubBanner()));
+  console.log(linearPubBanner());
 }
 
 function redrawLayout() {
@@ -925,7 +956,7 @@ async function writeFailureDiagnostics(page, key, reason) {
 function getBrowserLaunchOptions() {
   return {
     headless: !SHOW_BROWSER,
-    slowMo: SHOW_BROWSER ? 250 : 0,
+    slowMo: 0,
     args: [
       "--disable-extensions",
       "--disable-background-networking",
@@ -956,7 +987,12 @@ async function createAutomationPage(options = {}) {
   const pages = context.pages();
   const page = pages[0] || (await context.newPage());
   page.setDefaultTimeout(DEFAULT_TIMEOUT_MS);
-  await blockHeavyResources(page);
+  // Only strip images/fonts/media on hidden background runs (a small speed win).
+  // When the browser is visible we load the page in full, exactly as a normal
+  // visit, so the site renders and its checks behave the same as for a person.
+  if (!SHOW_BROWSER) {
+    await blockHeavyResources(page);
+  }
 
   return { browser, context, page };
 }
@@ -1053,7 +1089,7 @@ function updateHeaderKeyTime(timeLeft) {
     return;
   }
 
-  drawTimeZone(centeredHeaderArtLines(text));
+  drawTimeZone(headerArtLines(text));
 }
 
 const STATUS_STEPS = [
@@ -1454,10 +1490,18 @@ async function createDownloadProgressTracker(board, browser) {
 async function downloadLoader(board, browser, page, generateButton) {
   board.setDetail("generate", formatDownloadDetail(0, 0));
 
-  const generate = generateButton || page.getByText(/generate loader/i).first();
-  if (!generateButton) {
-    await generate.waitFor({ state: "visible", timeout: GENERATE_TIMEOUT_MS });
-  }
+  const generate = generateButton || page.locator("#generateBtn");
+  await generate.waitFor({ state: "visible", timeout: GENERATE_TIMEOUT_MS });
+
+  // "Generate Loader" opens the download via window.open('_blank'), which would
+  // land in a popup tab we don't watch. Neutralise window.open so the site's own
+  // fallback (location.href = url) downloads in THIS tab, where the download
+  // event and CDP progress are captured.
+  await page
+    .evaluate(() => {
+      window.open = () => null;
+    })
+    .catch(() => {});
 
   const progress = await createDownloadProgressTracker(board, browser);
   try {
@@ -1676,7 +1720,7 @@ async function fillKeyFieldFast(page, keyField, key) {
 
   return page
     .evaluate((serial) => {
-      const field = document.querySelector("#serialNumber");
+      const field = document.querySelector("#serialInput");
       if (!field) {
         return false;
       }
@@ -1718,50 +1762,114 @@ async function isContinueHydrated(page) {
     .catch(() => false);
 }
 
+// True while the launcher is mid-auth (spinner shown / button disabled), so we
+// don't fire a second auth request on top of the one already running.
+async function isLaunchBusy(page) {
+  return page
+    .evaluate(() => {
+      const button = document.getElementById("launchBtn");
+      return Boolean(button && (button.disabled || button.classList.contains("loading")));
+    })
+    .catch(() => false);
+}
+
+// Submit the "Launch" auth form. The site verifies the key on submit, then
+// reveals the membership view with the spoofer select and Generate button.
+async function submitLaunch(page) {
+  try {
+    await page.locator("#launchBtn").click({ timeout: FAST_ACTION_TIMEOUT_MS });
+    return true;
+  } catch {
+    // The button may not be click-ready yet; fall back to submitting the form
+    // itself (fires the same submit handler) or pressing Enter in the field.
+  }
+
+  const submitted = await page
+    .evaluate(() => {
+      const form = document.getElementById("launcherForm");
+      if (form && typeof form.requestSubmit === "function") {
+        form.requestSubmit();
+        return true;
+      }
+      return false;
+    })
+    .catch(() => false);
+  if (submitted) {
+    return true;
+  }
+
+  return page
+    .locator("#serialInput")
+    .press("Enter", { timeout: FAST_ACTION_TIMEOUT_MS })
+    .then(() => true)
+    .catch(() => false);
+}
+
+// Read a real error the site raised (invalid / expired / banned key, network),
+// so we fail fast with the site's own words instead of waiting out the timeout.
+// Transient "warn" toasts (e.g. "enter a key") are ignored on purpose.
+async function readSiteError(page) {
+  return page
+    .evaluate(() => {
+      const toast = document.getElementById("toast");
+      if (!toast || !toast.classList.contains("show") || !toast.classList.contains("error")) {
+        return "";
+      }
+      const head = toast.querySelector("h3");
+      const body = toast.querySelector("p");
+      return [head && head.textContent, body && body.textContent]
+        .filter(Boolean)
+        .join(": ")
+        .trim();
+    })
+    .catch(() => "");
+}
+
 async function waitForGenerateAfterKey(page, keyField, generateButton, key) {
   const started = Date.now();
   let submitAttempts = 0;
+  let lastSubmitAt = 0;
+
+  // Put the key in the field up front. The redesigned launcher also refills it
+  // from the saved session (localStorage lp_serial), so a fresh profile and a
+  // remembered one both end up ready to submit.
+  await fillKeyFieldFast(page, keyField, key);
 
   while (Date.now() - started < GENERATE_TIMEOUT_MS) {
+    // Auth succeeded once the membership view's Generate button is showing.
     if (await generateButton.isVisible().catch(() => false)) {
       return;
     }
 
-    const keyFieldReady = await hasSerialField(keyField);
-    const continueVisible = await page
-      .getByRole("button", { name: /continue/i })
-      .first()
-      .isVisible()
-      .catch(() => false);
-    const continueTextVisible = continueVisible
-      ? true
-      : await page
-          .getByText(/^continue$/i)
-          .first()
-          .isVisible()
-          .catch(() => false);
-
-    if (keyFieldReady) {
-      await fillKeyFieldFast(page, keyField, key);
-      const canSubmit =
-        continueVisible || continueTextVisible
-          ? (await isContinueHydrated(page)) ||
-            Date.now() - started >= HYDRATED_SUBMIT_FALLBACK_MS
-          : false;
-      if (canSubmit && (await clickContinueButton(page))) {
-        submitAttempts += 1;
-      }
-      await page.waitForTimeout(KEY_SUBMIT_RETRY_MS);
-      continue;
+    const siteError = await readSiteError(page);
+    if (siteError) {
+      throw new FriendlyError(`The site rejected the key: ${siteError}`);
     }
 
-    await page.waitForTimeout(100);
+    // While the login form is still up (and not mid-request), make sure the key
+    // is present and press Launch. Once auth starts, the form hides and we just
+    // wait for Generate.
+    const keyFieldVisible = await keyField.isVisible().catch(() => false);
+    if (keyFieldVisible && !(await isLaunchBusy(page))) {
+      const current = await keyField.inputValue().catch(() => "");
+      if (normalizeEnteredKey(current) !== key) {
+        await fillKeyFieldFast(page, keyField, key);
+      }
+      if (Date.now() - lastSubmitAt > 1500) {
+        if (await submitLaunch(page)) {
+          submitAttempts += 1;
+        }
+        lastSubmitAt = Date.now();
+      }
+    }
+
+    await page.waitForTimeout(KEY_SUBMIT_RETRY_MS);
   }
 
   let message =
     "Generate Loader did not appear after submitting the key. Check keys.txt and try again.";
   if (submitAttempts > 1) {
-    message += `\n\nThe page was still showing the serial-number form after ${submitAttempts} submit attempts.`;
+    message += `\n\nThe page was still showing the license-key form after ${submitAttempts} submit attempts.`;
   }
   try {
     const diagnostics = await writeFailureDiagnostics(page, key, "Generate Loader button was not visible after key submit.");
@@ -2020,46 +2128,35 @@ async function openExeTypeControl(page) {
 }
 
 async function chooseExeTypeOnWebsite(page, exeType, key) {
-  if (await chooseComboboxExeType(page, exeType)) {
-    if (SHOW_BROWSER) {
-      await page.waitForTimeout(750);
-    }
-    return true;
-  }
-
-  if (await chooseNativeExeType(page, exeType)) {
-    if (SHOW_BROWSER) {
-      await page.waitForTimeout(750);
-    }
-    return true;
-  }
-
-  await openExeTypeControl(page);
-  await page.waitForTimeout(100);
-  if (await clickExeTypeChoice(page, exeType)) {
-    if (SHOW_BROWSER) {
-      await page.waitForTimeout(750);
-    }
-    return true;
-  }
-
-  if (exeType === EXE_TYPE_DEFAULT) {
-    return false;
-  }
-
-  let message = "Could not select BE under Spoofer Type / Type of Exe before generating the launcher.";
+  // New launcher exposes a plain <select id="spooferSelect"> in the membership
+  // view: 0 = No Spoofer, 1 = BE, 2 = EAC. We only drive none / BE. The site
+  // already defaults the select to "0" on auth, so "no" needs no action.
+  const value = exeType === "be" ? "1" : "0";
   try {
-    const diagnostics = await writeFailureDiagnostics(page, key, "Spoofer Type / Type of Exe BE option was not selectable.");
-    message +=
-      "\n\nSaved diagnostics so you can see what page the script reached:" +
-      `\n- ${diagnostics.textPath}` +
-      `\n- ${diagnostics.htmlPath}` +
-      `\n- ${diagnostics.screenshotPath}`;
-  } catch (diagnosticErr) {
-    message += `\n\nCould not save diagnostics: ${diagnosticErr.message}`;
-  }
+    const select = page.locator("#spooferSelect");
+    await select.waitFor({ state: "visible", timeout: DEFAULT_TIMEOUT_MS });
+    await select.selectOption(value, { timeout: DEFAULT_TIMEOUT_MS });
+    return true;
+  } catch (err) {
+    if (exeType === EXE_TYPE_DEFAULT) {
+      // "No Spoofer" is the site's own default, so a miss here is harmless.
+      return false;
+    }
 
-  throw new FriendlyError(message);
+    let message = "Could not select the BE spoofer before generating the loader.";
+    try {
+      const diagnostics = await writeFailureDiagnostics(page, key, "Spoofer Type BE option was not selectable.");
+      message +=
+        "\n\nSaved diagnostics so you can see what page the script reached:" +
+        `\n- ${diagnostics.textPath}` +
+        `\n- ${diagnostics.htmlPath}` +
+        `\n- ${diagnostics.screenshotPath}`;
+    } catch (diagnosticErr) {
+      message += `\n\nCould not save diagnostics: ${diagnosticErr.message}`;
+    }
+
+    throw new FriendlyError(message);
+  }
 }
 
 // Read the one saved key from keys.txt.
@@ -2742,7 +2839,7 @@ async function promptForKey() {
   // COPY KEY takes the reserved time zone (same size and spot as the key time
   // that replaces it later). The idle prompt line below stays blank.
   if (cursorReady) {
-    drawTimeZone(centeredHeaderArtLines("COPY KEY"));
+    drawTimeZone(headerArtLines("COPY KEY"));
   } else {
     console.log(bannerGradient(makeHeaderPixelArt("COPY KEY")));
     console.log();
@@ -3029,12 +3126,12 @@ async function main() {
     browser = automation.browser;
     activeBrowser = browser;
     page = automation.page;
-    const keyField = page.locator("#serialNumber");
+    const keyField = page.locator("#serialInput");
 
     await gotoWithRetry(page, SITE_URL, board);
     board.complete("access");
 
-    const generateButton = page.getByText(/generate loader/i).first();
+    const generateButton = page.locator("#generateBtn");
     await waitForGenerateAfterKey(page, keyField, generateButton, key);
     board.complete("enterKey");
     stopKeyTimeSync = startKeyTimeHeaderSync(page);
@@ -3049,10 +3146,10 @@ async function main() {
     }
     board.complete("generate");
 
-    if (!SHOW_BROWSER) {
-      stopKeyTimeSync();
-      closeBrowserPromise = trackBrowserClose(browser);
-    }
+    // Success: close the browser right away (even when visible) so the loader
+    // launches without waiting on the window. The download is already saved.
+    stopKeyTimeSync();
+    closeBrowserPromise = trackBrowserClose(browser);
 
     const launched = runDownloaded(savePath);
     if (launched) {
@@ -3068,12 +3165,7 @@ async function main() {
       process.exitCode = 1;
     }
 
-    if (SHOW_BROWSER) {
-      await waitForVisibleBrowserClose(browser, page);
-      stopKeyTimeSync();
-    } else {
-      await closeBrowserPromise;
-    }
+    await closeBrowserPromise;
     if (activeBrowser === browser) {
       activeBrowser = null;
     }
