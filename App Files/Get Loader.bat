@@ -11,7 +11,7 @@ if errorlevel 1 (
   call :EnsureReady
   if errorlevel 1 (
     echo.
-    echo Setup failed. Fix the message above, then open Get Loader.bat again.
+    echo Setup failed. Fix the message above, then open Get Loader.exe again.
     echo.
     pause
     exit /b 1
@@ -26,7 +26,7 @@ set "EXIT_CODE=%ERRORLEVEL%"
 
 if not "%EXIT_CODE%"=="0" (
   echo.
-  echo The loader script failed. Review the message above, then open Get Loader.bat again.
+  echo The loader script failed. Review the message above, then open Get Loader.exe again.
   echo.
   pause
 )
@@ -65,7 +65,7 @@ call :RefreshNodePath
 call :FindNode
 if not defined NODE_FOUND (
   echo Node.js was installed, but this window cannot see it yet.
-  echo Close this window and open Get Loader.bat again.
+  echo Close this window and open Get Loader.exe again.
   exit /b 1
 )
 

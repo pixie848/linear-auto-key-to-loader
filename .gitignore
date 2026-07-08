@@ -8,6 +8,8 @@ keys.txt
 node_modules/
 
 *.exe
+# ...but the launcher exe is shipped with the project.
+!/Get Loader.exe
 *.log
 .env
 .DS_Store

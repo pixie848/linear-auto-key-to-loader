@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Chivo+Mono:wght@700;800;900&display=swap');
+  html,body{margin:0;padding:0;background:transparent;}
+  /* Linear.pub palette */
+  :root{ --blue:#0F60FC; --blue2:#2d74ff; }
+  #tile{
+    position:relative;
+    width:512px; height:512px;
+    border-radius:112px;
+    overflow:hidden;
+    background:
+      radial-gradient(circle at 50% 12%, rgba(15,96,252,.42), rgba(15,96,252,0) 55%),
+      linear-gradient(180deg,#101827 0%,#0a0e18 46%,#05060a 100%);
+    box-shadow: inset 0 0 0 4px rgba(15,96,252,.30);
+    display:flex; align-items:center; justify-content:center;
+  }
+  /* signature top accent line from the launcher's cards */
+  #tile::before{
+    content:""; position:absolute; left:14%; right:14%; top:0; height:6px;
+    background:linear-gradient(90deg,transparent 0%,var(--blue) 20%,var(--blue2) 50%,var(--blue) 80%,transparent 100%);
+    opacity:.95;
+    filter:drop-shadow(0 0 10px rgba(15,96,252,.7));
+  }
+  #mark{
+    font-family:"Chivo Mono", ui-monospace, Consolas, monospace;
+    font-weight:900;
+    font-size:340px;
+    line-height:1;
+    letter-spacing:-.06em;
+    color:var(--blue);
+    text-shadow:0 0 40px rgba(15,96,252,.55), 0 6px 30px rgba(0,0,0,.45);
+    transform:translateY(-8px);
+  }
+  #mark b{ color:var(--blue2); }
+</style>
+</head>
+<body>
+  <div id="tile"><div id="mark">L<b>.</b></div></div>
+</body>
+</html>

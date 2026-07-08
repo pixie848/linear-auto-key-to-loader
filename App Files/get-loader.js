@@ -3061,7 +3061,7 @@ async function gotoWithRetry(page, url, board) {
       if (!isNetworkError(err) || Date.now() >= deadline) {
         if (isNetworkError(err)) {
           throw new FriendlyError(
-            "Could not reach launcher.linear.pub. Check your internet connection, then open Get Loader.bat again.",
+            "Could not reach launcher.linear.pub. Check your internet connection, then open Get Loader.exe again.",
             "no_network"
           );
         }

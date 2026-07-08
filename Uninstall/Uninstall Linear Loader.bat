@@ -1,10 +1,16 @@
 @echo off
 setlocal
 title Uninstall Linear Loader
-cd /d "%~dp0"
 
-set "APP_DIR=%~dp0"
-set "APP_DIR=%APP_DIR:~0,-1%"
+rem This bat lives in <app root>\Uninstall\, so the app root is its parent.
+pushd "%~dp0.."
+set "APP_DIR=%CD%"
+popd
+
+rem Run from a neutral folder so nothing in the app tree stays locked while it
+rem is being deleted.
+cd /d "%TEMP%"
+
 set "USER_STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 set "COMMON_STARTUP=%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup"
 set "WARMUP_NAME=Linear Loader Warmup"
@@ -18,7 +24,7 @@ echo It will remove:
 echo - Windows Startup warmup entries
 echo - downloaded loaders
 echo - node_modules and setup files
-echo - keys.txt and the rest of this folder
+echo - keys.txt and the rest of the Linear Loader folder
 echo.
 
 echo.

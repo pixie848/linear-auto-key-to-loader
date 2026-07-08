@@ -1,7 +1,7 @@
 @echo off
 setlocal
-title Switch Spoofer Type
-cd /d "%~dp0"
+title Switch Type
+cd /d "%~dp0App Files"
 mode con: cols=64 lines=20 >nul 2>nul
 cls
 
@@ -9,8 +9,8 @@ call :RefreshNodePath
 call :FindNode
 if not defined NODE_FOUND (
   echo.
-  echo Node.js was not found. Open Get Loader.bat once to set things up,
-  echo then run Switch Spoofer Type.bat again.
+  echo Node.js was not found. Open Get Loader.exe once to set things up,
+  echo then run Switch Type.bat again.
   echo.
   pause
   exit /b 1
